@@ -27,25 +27,34 @@ This agent does neither. It breaks the job description into individual checkable
 
 Seven resumes, one AI/ML internship JD. The ranking was hand-marked first, then the pipeline ran blind against it.
 
-| # | Pipeline said | | Hand-marked answer key |
+Candidates are anonymised here — they are real applicants. Labels run in
+answer-key order, so Candidate A is the strongest by hand.
+
+| # | Pipeline scored | | Hand-marked answer key |
 |:--:|:--|:--:|:--|
-| 1 | **Pranav Gore** · 72.50 | ↔ | Eklavya Gade · 88.64 |
-| 2 | **Eklavya Gade** · 60.50 | ↔ | Aditya Deshkar · 84.27 |
-| 3 | **Aditya Deshkar** · 52.50 | ↔ | Pranav Gore · 82.45 |
-| 4 | **Shlok Chandak** · 52.00 | ✅ | Shlok Chandak · 59.82 |
-| 5 | **Atticus Hawthorn** · 30.00 | ✅ | Atticus Hawthorn · 50.45 |
-| 6 | **Ryan Frank** · 20.00 | ✅ | Ryan Frank · 34.45 |
+| 1 | **Candidate A** · 84.09 | ✅ | Candidate A · 88.64 |
+| 2 | **Candidate B** · 75.00 | ✅ | Candidate B · 84.27 |
+| 3 | **Candidate C** · 70.00 | ✅ | Candidate C · 82.45 |
+| 4 | **Candidate D** · 56.36 | ✅ | Candidate D · 59.82 |
+| 5 | **Candidate E** · 27.27 | ✅ | Candidate E · 50.45 |
+| 6 | **Candidate F** · 27.27 | ✅ | Candidate F · 34.45 |
 | 7 | **Electrical engineer** · 0.00 | ✅ | Electrical engineer · 0.00 |
 
-**The bottom half is exact. The top three are the same three people**, reordered among themselves — and they sat within 6 points of each other in the answer key, so that ordering was always a coin toss.
+**All seven positions match the answer key.** The pipeline scores lower than a
+human across the board — it only credits what it can find evidence for — but
+the *ordering*, which is what a shortlist actually depends on, is identical.
+
+One honest caveat: E and F come out tied at 27.27, so their relative order is
+not something the pipeline actually resolved. It happens to agree with the
+answer key; on this evidence that is luck, not skill.
 
 The three tests that mattered most:
 
-> 🎯 **The 0.04 test.** The JD demands a minimum CGPA of **8.00**. One candidate has **7.96** and is the strongest applicant on every other requirement. The judge marked him `NOT_MET` on CGPA — and still ranked him first on everything else. Reading a table cell correctly and then comparing two decimals is where most naive pipelines quietly fail.
+> 🎯 **The 0.04 test.** The JD demands a minimum CGPA of **8.00**. Candidate C has **7.96** and is strong on nearly every other requirement. The judge marked them `NOT_MET` on CGPA and still placed them third overall on the strength of everything else — the penalty stayed on the one criterion it belonged to instead of sinking the whole application. Reading a table cell correctly and then comparing two decimals is where most naive pipelines quietly fail.
 >
-> 🎯 **The off-domain test.** A financial planner, a schoolteacher and an electrical design engineer were mixed into the pile. All sank. A resume full of the word "analysis" should not float on vibes.
+> 🎯 **The off-domain test.** A financial planner, a schoolteacher and an electrical design engineer were mixed into the pile. All sank, the electrical engineer to a flat zero. A resume full of the word "analysis" should not float on vibes.
 >
-> 🎯 **The "named but never used" test.** One candidate lists LangChain and CLIP but has never touched PyTorch, TensorFlow or Keras. He lost that one criterion and kept the rest — instead of being blanket-punished or blanket-credited.
+> 🎯 **The "named but never used" test.** One candidate lists LangChain and CLIP but has never touched PyTorch, TensorFlow or Keras. They lost that one criterion and kept the rest — instead of being blanket-punished or blanket-credited.
 
 The full answer key was written by hand before the pipeline ever ran — every
 criterion, for every candidate, with the reasoning behind each mark. It is kept
