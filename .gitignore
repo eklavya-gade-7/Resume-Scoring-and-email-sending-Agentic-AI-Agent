@@ -1,0 +1,62 @@
+# ---------------------------------------------------------------------------
+# SECRETS - never commit these. This is a public repository.
+# Every one of these files is created by you locally, following the README.
+# ---------------------------------------------------------------------------
+.env
+credentials.json
+credentials_personal.json
+token.json
+*.pem
+*.key
+
+# ---------------------------------------------------------------------------
+# Candidate data - real resumes belong to real people, keep them off GitHub.
+# The folder itself is tracked (via .gitkeep) so the pipeline has somewhere
+# to look. Drop your own resumes into it, see the README.
+# ---------------------------------------------------------------------------
+test_resumes/*
+!test_resumes/.gitkeep
+
+# extraction cache - derived, and holds candidates' personal data
+profile_cache/
+
+# the hand-marked answer key names real candidates and grades them, and the
+# deck screenshots their scores - kept local, not published
+expected_grading.txt
+*.pptx
+
+# generated on every run
+pipeline_ranking.txt
+test_resumes_verdicts/
+gradesheet.txt
+verdict.txt
+output_file.txt
+json_response.json
+json_response.json4
+decomposition_cache.json
+extracted_markdown*.md
+
+# langgraph workflow state
+recruitment_checkpoints.sqlite
+recruitment_checkpoints.sqlite-shm
+recruitment_checkpoints.sqlite-wal
+
+# scratch inputs and screenshots
+Pasted image*.png
+Screenshot*.png
+_ocr_page.png
+vlm_test1.md
+
+# recordings
+*.mp4
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# editors / os
+.vscode/
+.idea/
+.DS_Store

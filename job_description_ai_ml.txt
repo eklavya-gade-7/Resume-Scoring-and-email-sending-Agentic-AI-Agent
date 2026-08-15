@@ -1,0 +1,44 @@
+AI/ML Engineer Intern
+
+We are building applied machine learning systems that go from a raw dataset to a
+model running in production. The intern will sit with the engineers who own the
+model, not on a separate research island. Expect real, messy data, a fast
+feedback loop, and code review from people who have shipped models before.
+
+Day to day this looks like reading a recent paper on Monday, having a rough
+prototype by Thursday, and arguing about whether the numbers are real on Friday.
+
+Who we are looking for:
+
+- The candidate should have a minimum CGPA of 8.00 out of 10, or an equivalent
+  of 80% where the institute grades in percentage
+- The candidate should be proficient in Python
+- The candidate must have hands-on experience with at least one deep learning
+  framework, such as PyTorch, TensorFlow or Keras
+- The candidate should have built classical machine learning models, such as a
+  regression model or a classification model
+- The candidate should have built something hands-on in computer vision or in
+  natural language processing
+- The candidate should quote concrete evaluation numbers for their own work,
+  such as an accuracy, an F1 score, an R2 value or an error rate
+- The candidate should have a working knowledge of data structures and algorithms
+- The candidate should have held a position of responsibility in a student club,
+  student team, technical society, committee or similar body
+
+Good to have:
+
+- Experience with large language models, in any one of retrieval-augmented
+  generation, LangChain, vector databases, embeddings or fine-tuning
+- Exposure to MLOps and deployment, in any one of Docker, FastAPI, MLflow,
+  model serving or experiment tracking
+- Hands-on reinforcement learning work
+- Research exposure, such as working in a lab, working under a professor, or a
+  literature survey of recent papers
+- Experience with a cloud platform such as AWS, GCP or Azure
+
+Other conditions:
+
+- The candidate must have no current backlogs
+- The candidate should be willing to relocate to Bengaluru for the internship
+- The candidate should be available full time for six months starting January
+- Expected stipend should be within the advertised band

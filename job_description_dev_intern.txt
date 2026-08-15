@@ -1,0 +1,28 @@
+Technology Developer Intern
+
+Technology is an integral part of virtually everything we do, and our team enjoys access to some of the most advanced computing resources in the world. The technology teams work on a variety of projects ranging from the firm's diversified strategies, trading systems, portfolio management and visualization platforms, quantitative analysis tools, real-time financial data-feed infrastructure, high-performance low-latency middleware systems, or workflow tools to making talent functions more efficient and effective.
+
+Successful candidates have traditionally been the top students in their programs and have extensive software development knowledge.
+
+Internship Exposure:
+
+- Gaining insights into financial domain
+- Acquiring end-to-end understanding of trading systems workflow and building core trading system components
+- Working on transformative tools, enhancing data analysis libraries, and building data visualization platforms
+- Designing and implementing scalable, real-time software
+
+Who we are looking for:
+
+- The ideal candidate should be a pre-final year student with a minimum CGPA of 7.00 in Computer Science branches and 8.00 in all other branches with no current backlogs
+- The candidate should be proficient in programming skills of C/C++/Java/Python
+- Candidate should have practical understanding of CS concepts in the following areas:
+  - Data Structures and algorithms
+  - Operating Systems
+  - Computer networks
+  - Database management systems
+- The candidate should have excellent problem-solving and logical reasoning abilities
+
+Bonus:
+
+- Proficient in speed maths and probability
+- Hands on Experience with Machine Learning and Computer Vision

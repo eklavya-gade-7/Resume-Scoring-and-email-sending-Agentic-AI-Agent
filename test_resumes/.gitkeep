@@ -1,0 +1,7 @@
+Put the resumes you want screened in this folder.
+
+PDF, PNG and JPG are all accepted - the pipeline reads scanned and
+image-based resumes through a vision model, not just text PDFs.
+
+Resumes are deliberately not committed to this repository: they are real
+people's personal data. This file only exists so the folder does.

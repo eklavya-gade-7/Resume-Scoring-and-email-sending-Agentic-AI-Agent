@@ -1,0 +1,64 @@
+# PDF -> markdown
+pymupdf==1.28.2
+pymupdf4llm==1.28.2
+
+# vision model for scans and broken extractions
+google-genai==2.17.0
+
+# structured output schemas
+pydantic==2.13.4
+
+# reads the API keys from .env
+python-dotenv==1.2.2
+
+langchain
+langchain_community
+langchain-openai
+langchain-experimental
+langchain-classic
+langchain-core
+faiss-cpu
+pypdf
+rank_bm25
+nltk
+spacy
+contractions
+fastapi
+uvicorn
+python-dotenv
+python-multipart
+langchain-groq
+sentence-transformers
+langchain-ollama
+langchain-google-genai
+langchain-cerebras
+langgraph-checkpoint-sqlite
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+streamlit
+
+# interview scheduling agent - langgraph itself, not just its sqlite checkpointer
+langgraph
+
+# retrieval maths: cosine similarity, TF-IDF, MMR, every score array
+numpy
+scikit-learn
+
+# cross-encoder reranker runs on torch directly
+torch
+
+# local OCR fallback for scanned resumes
+paddleocr
+paddlepaddle
+
+# these SDKs are imported directly for their exception classes in the
+# fallback chains, so they are listed instead of relying on the langchain
+# wrappers to drag them in
+openai
+groq
+ollama
+httpx
+
+# load_JD.py
+pandas
