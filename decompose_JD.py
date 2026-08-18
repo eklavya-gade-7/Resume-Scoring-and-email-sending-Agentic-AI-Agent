@@ -14,9 +14,15 @@ load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 # 8b-instant at temperature 0.3 kept ignoring the output format - it added
 # "Here are the requirements:" preambles, numbered every line, and invented a
-# fourth synonyms field. Every one of those made the parser drop the line.
-# The 70b model at temperature 0 is the same one build_profile.py already uses.
-model = init_chat_model("llama-3.3-70b-versatile",api_key = GROQ_API_KEY , temperature = 0 , model_provider="groq")
+# fourth synonyms field. Every one of those made the parser drop the line. This
+# used to be llama-3.3-70b-versatile at temperature 0, which Groq retired on
+# 16 August 2026. gpt-oss-120b is the bigger of the two replacements Groq names,
+# and the same model generate_score.py already grades with.
+#
+# This one call has no fallback behind it, so a dead model name here stops the
+# whole pipeline at import. The result is cached in decomposition_cache.json,
+# so an existing cache keeps its old groups and scores stay comparable.
+model = init_chat_model("openai/gpt-oss-120b", api_key=GROQ_API_KEY, temperature=0, model_provider="groq")
 
 decomposition_prompt = PromptTemplate.from_template(
 """

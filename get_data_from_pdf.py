@@ -8,20 +8,23 @@ from google import genai
 from google.genai import types
 from google.genai.errors import ClientError, ServerError
 from groq import RateLimitError, APIStatusError, APIConnectionError
+# Aliased, and it matters. openai.APIStatusError and groq.APIStatusError are two
+# unrelated classes that happen to share a name - importing both unaliased means
+# the second silently replaces the first, and one provider's errors stop being
+# caught at all. Same trap as the one documented in generate_score.py.
+from openai import (
+    OpenAI,
+    RateLimitError as OpenAIRateLimitError,
+    APIStatusError as OpenAIAPIStatusError,
+    APIConnectionError as OpenAIAPIConnectionError,
+)
 from pydantic import ValidationError
 
 from build_profile import Profile, PROMPT as EXTRACTION_RULES, build_json_from_resume
 
-# from openai import OpenAI
-
 load_dotenv()              # reads the API keys from a .env file in this folder
 
 cwd = os.getcwd()
-
-# ---- OpenAI version (kept for reference, not in use) ----
-# openai_api_key = os.getenv("OPENAI_API_KEY")
-# client = OpenAI(api_key = openai_api_key)
-# VLM_MODEL = "gpt-4o-mini"
 
 gemini_api_key = os.getenv("GEMINI_API_KEY")
 if not gemini_api_key:
@@ -34,6 +37,33 @@ VLM_MODEL = "gemini-3.5-flash"
 # Gemini free-tier limits are counted per model, so a second Gemini model is a
 # genuinely separate bucket rather than the same quota under another name.
 VLM_MODEL_LITE = "gemini-flash-lite-latest"
+
+# Both of these speak the OpenAI wire format, so they need no new dependency -
+# the openai client already installed just gets pointed somewhere else.
+#
+# Model names are the fragile part. This project has already lost two models to
+# silent retirement (Groq's llama-4-scout and llama-3.3-70b), so check a name is
+# still served before blaming the code:
+#   OpenRouter  curl https://openrouter.ai/api/v1/models     (no key needed)
+#   Mistral     curl -H "Authorization: Bearer $MISTRAL_API_KEY" \
+#                    https://api.mistral.ai/v1/models
+MISTRAL_BASE_URL = "https://api.mistral.ai/v1"
+
+# Mistral lists mistral-large-2512, mistral-medium-2508, mistral-small-2506 and
+# the ministral-3b/8b/14b-2512 family as the ones that can see images. The small
+# one is plenty for transcribing a page and is the kindest to a free tier.
+# (pixtral-12b used to be the vision model here and is no longer on that list.)
+MISTRAL_VLM_MODEL = "mistral-small-latest"
+
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+# Picked off the live free list. Free models on OpenRouter come and go monthly,
+# so this one is a constant rather than buried in the call.
+OPENROUTER_VLM_MODEL = "nvidia/nemotron-nano-12b-v2-vl:free"
+
+# Conservative ceiling shared by both. A resume is one or two pages, so this
+# only ever trips on something that was not really a resume.
+MAX_PAGES_PER_REQUEST = 8
 
 
 def get_raw_text(path):
@@ -120,7 +150,13 @@ def callVLM_gemini_lite(path):
 
 
 def callVLM_groq(path):
-    """Second tier. Different provider, so a completely separate daily budget."""
+    """Not wired into VLM_CHAIN any more. Kept for when Groq serves vision again.
+
+    Groq retired llama-4-scout and now serves no image model at all - asking for
+    it returns 404 model_not_found. The tier could never succeed, so it was
+    removed from the chain rather than left there failing on every scan. Point
+    the model name at whatever Groq offers next and put it back in the list.
+    """
     from groq import Groq
 
     groq_api_key = os.getenv("GROQ_API_KEY")
@@ -149,8 +185,78 @@ def callVLM_groq(path):
     return reply.choices[0].message.content
 
 
+def data_uris(path):
+    """Every page as a base64 data URI, with a sane page-count guard.
+
+    Both OpenAI-compatible tiers below want images inline rather than as a
+    hosted URL, and neither of them will accept a 40-page document.
+    """
+    images = page_images(path)
+
+    if len(images) > MAX_PAGES_PER_REQUEST:
+        raise RuntimeError(
+            f"{len(images)} pages, this tier accepts {MAX_PAGES_PER_REQUEST}"
+        )
+
+    return [
+        "data:image/png;base64," + base64.b64encode(png).decode()
+        for png in images
+    ]
+
+
+def callVLM_mistral(path):
+    """Third tier. Different company, so a completely separate budget.
+
+    Mistral's free Experiment tier is a monthly token allowance rather than a
+    per-day one, which makes it a genuinely different kind of budget from
+    Gemini's per-minute request cap - the failure that pushed us this far down
+    the chain in the first place.
+    """
+    api_key = os.getenv("MISTRAL_API_KEY")
+    if not api_key:
+        raise RuntimeError("MISTRAL_API_KEY not set")
+
+    # Mistral takes image_url as a plain string, NOT the nested {"url": ...}
+    # object OpenAI and OpenRouter use. Same field name, different shape. If
+    # this tier starts returning 422, that is the first thing to check.
+    content = [{"type": "text", "text": PROMPT}]
+    for uri in data_uris(path):
+        content.append({"type": "image_url", "image_url": uri})
+
+    reply = OpenAI(api_key=api_key, base_url=MISTRAL_BASE_URL).chat.completions.create(
+        model=MISTRAL_VLM_MODEL,
+        messages=[{"role": "user", "content": content}],
+        temperature=0
+    )
+    return reply.choices[0].message.content
+
+
+def callVLM_openrouter(path):
+    """Fourth tier. One key, and a pool of free vision models behind it.
+
+    Worth knowing before leaning on this: free models on OpenRouter allow 20
+    requests a minute but only 50 a day until the account has bought $10 of
+    credit at some point, after which it is 1000 a day. Fine as a backstop for
+    the occasional scan, not something to run a whole batch through.
+    """
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY not set")
+
+    content = [{"type": "text", "text": PROMPT}]
+    for uri in data_uris(path):
+        content.append({"type": "image_url", "image_url": {"url": uri}})
+
+    reply = OpenAI(api_key=api_key, base_url=OPENROUTER_BASE_URL).chat.completions.create(
+        model=OPENROUTER_VLM_MODEL,
+        messages=[{"role": "user", "content": content}],
+        temperature=0
+    )
+    return reply.choices[0].message.content
+
+
 def callOCR_paddle(path):
-    """Third tier. Local, never rate limited, but text only.
+    """Last tier. Local, never rate limited, but text only.
 
     There is no layout here. The education table becomes loose lines, so the
     CGPA may no longer sit next to the degree it belongs to. Expect a weaker
@@ -286,26 +392,54 @@ def read_profile_with_fallbacks(path):
     return None
 
 
+def build_vlm_chain():
+    """Ordered readers for page images -> markdown, best first.
+
+    Tiers whose key is missing are left out rather than included and allowed to
+    fail. Both amount to the same markdown in the end, but a chain built from
+    the keys that actually exist prints one honest line per resume instead of a
+    guaranteed failure for every provider the user never signed up for.
+
+    Groq used to sit between the Gemini tiers and PaddleOCR. It no longer serves
+    any image model, so that tier was a guaranteed 404 on every scan and is
+    gone - see callVLM_groq.
+    """
+    chain = [
+        ("gemini flash", callVLM),
+        ("gemini flash lite", callVLM_gemini_lite),
+    ]
+
+    if os.getenv("MISTRAL_API_KEY"):
+        chain.append((f"mistral {MISTRAL_VLM_MODEL}", callVLM_mistral))
+
+    if os.getenv("OPENROUTER_API_KEY"):
+        chain.append((f"openrouter {OPENROUTER_VLM_MODEL}", callVLM_openrouter))
+
+    # Always last. It is the only tier that cannot be rate limited, but it reads
+    # text without layout, so everything above it gets first refusal.
+    chain.append(("paddleocr (local, no layout)", callOCR_paddle))
+
+    return chain
+
+
 # Tried in order, first one that returns text wins.
-VLM_CHAIN = [
-    ("gemini flash", callVLM),
-    ("gemini flash lite", callVLM_gemini_lite),
-    ("groq llama-4-scout", callVLM_groq),
-    ("paddleocr (local, no layout)", callOCR_paddle),
-]
+VLM_CHAIN = build_vlm_chain()
 
 
 # Only these mean "this reader is unavailable, try the next one". Anything else
 # is a real bug and should surface instead of quietly sliding down the chain.
 READER_ERRORS = (
-    ClientError,             # google, 429 quota and 4xx
-    ServerError,             # google, 5xx
-    RateLimitError,          # groq
-    APIStatusError,          # groq
-    APIConnectionError,      # groq
-    RuntimeError,            # our own guards, e.g. too many pages for Scout
-    ImportError,             # paddleocr missing or broken install
-    OSError,                 # model download / disk failure
+    ClientError,                 # google, 429 quota and 4xx
+    ServerError,                 # google, 5xx
+    RateLimitError,              # groq
+    APIStatusError,              # groq
+    APIConnectionError,          # groq
+    OpenAIRateLimitError,        # mistral and openrouter, out of quota
+    OpenAIAPIStatusError,        # mistral and openrouter, 4xx and 5xx
+    OpenAIAPIConnectionError,    # mistral and openrouter, network
+    RuntimeError,                # our own guards: missing key, too many pages
+    ImportError,                 # paddleocr missing or broken install
+    OSError,                     # model download / disk failure
 )
 
 # The direct-JSON path can also fail on the schema itself: a model may return
@@ -410,8 +544,22 @@ def get_profile(path):
     goes through build_profile as before - and so does anything the direct-JSON
     attempt failed on.
     """
-    md = clean_tags(ppdf.to_markdown(path, use_ocr=False))
-    raw_text = get_raw_text(path)
+    # A file can carry a .pdf name and still not be a PDF - a truncated
+    # download, an HTML error page saved with the wrong extension, or a
+    # password-protected export. pymupdf raises FileDataError on all of those,
+    # and it is not an ExtractionFailed, so it used to escape every handler and
+    # end the batch. It is exactly the same class of problem as a reader giving
+    # up, so it is reported the same way.
+    try:
+        md = clean_tags(ppdf.to_markdown(path, use_ocr=False))
+        raw_text = get_raw_text(path)
+
+    except pymupdf.FileDataError as error:
+        raise ExtractionFailed(
+            f"{os.path.basename(path)} could not be opened as a PDF ({error}). "
+            "It may be corrupt, password protected, or not a PDF at all. "
+            "Send it for manual review."
+        ) from error
 
     is_scan = len(raw_text.strip()) < 150
     missing = [] if is_scan else find_missing_words(raw_text, md)

@@ -147,15 +147,15 @@ TOKEN_PATTERN = r"(?u)C\+\+|C#|[A-Za-z][A-Za-z0-9+#]*(?:[.-][A-Za-z0-9+#]+)*"
 
 ### 5 · Rerank, then force variety
 
-A cross-encoder (`ettin-reranker-32m-v1`, sigmoid-activated) reads each shortlisted chunk *together with* the query and reorders them. It is far more accurate than the bi-encoder and far too slow to run over everything, so it only ever sees the top 8.
+A cross-encoder (`ettin-reranker-32m-v1`, sigmoid-activated) reads each chunk *together with* the query and reorders them. It is far more accurate than the bi-encoder, and it scores **every chunk in the resume**, not a shortlist — a resume is small, so that costs about 0.45s per requirement, locally. Reranking only the retrieved shortlist made recall depend on how the search query happened to be worded, which is how three real computer-vision projects once failed to reach the judge. The top `TOP_K = 12` then go forward.
 
-Then **Maximal Marginal Relevance** picks the final 4:
+Then **Maximal Marginal Relevance** picks the final `FINAL_K = 5`:
 
 $$\text{MMR} = \lambda \cdot \text{relevance} - (1-\lambda) \cdot \text{redundancy}, \quad \lambda = 0.8$$
 
-Pure relevance ranking happily returns four near-identical skills lists. MMR trades a little relevance for a different *kind* of evidence — so the judge sees a project **and** an experience entry, not the same sentence four times.
+Pure relevance ranking happily returns five near-identical skills lists. MMR trades a little relevance for a different *kind* of evidence — so the judge sees a project **and** an experience entry, not the same sentence five times.
 
-> **Why 4 and not 2:** measured over 8 requirements with known answers, keeping 2 chunks scored 7/8 and keeping 4 scored 8/8. At 2, the weakest model in the pipeline gets the final say.
+> **Why not 2:** measured over 8 requirements with known answers, keeping 2 chunks scored 7/8 and keeping 4 scored 8/8. At 2, the weakest model in the pipeline gets the final say. 5 is one slot of insurance on top of that, because MMR was dropping the right chunk at 4.
 
 ### 6 · Judge each group, score the batch
 
@@ -235,17 +235,60 @@ Create a `.env` file in the project root:
 
 ```ini
 GEMINI_API_KEY=...      # required - resume extraction
-CEREBRAS_API_KEY=...    # 1M tokens/day free - the main workhorse
-GROQ_API_KEY=...        # fallback tier
+GROQ_API_KEY=...        # required - this is what actually does the grading
+CEREBRAS_API_KEY=...    # optional - widest budget, but see the warning below
+MISTRAL_API_KEY=...     # optional - backup reader for scans
+OPENROUTER_API_KEY=...  # optional - backup reader for scans
 EMAIL_ADDRESS=you@gmail.com
 PASSWORD=...            # 16-character Gmail App Password, NOT your login password
 ```
 
-| Key | Where | Free tier |
-|:--|:--|:--|
-| `GEMINI_API_KEY` | [aistudio.google.com](https://aistudio.google.com/apikey) | generous |
-| `CEREBRAS_API_KEY` | [cloud.cerebras.ai](https://cloud.cerebras.ai) | 1M tokens/day |
-| `GROQ_API_KEY` | [console.groq.com](https://console.groq.com/keys) | daily token cap |
+| Key | Where | What you actually get | Needed? |
+|:--|:--|:--|:--|
+| `GEMINI_API_KEY` | [aistudio.google.com](https://aistudio.google.com/apikey) | free, but only **5 requests/minute** on Flash and **15/min** on Flash Lite | required |
+| `GROQ_API_KEY` | [console.groq.com](https://console.groq.com/keys) | free, 200K tokens and 1,000 requests **per model** per day | required |
+| `CEREBRAS_API_KEY` | [cloud.cerebras.ai](https://cloud.cerebras.ai) | **$5 of credit, not a free tier** — see below | optional |
+| `MISTRAL_API_KEY` | [console.mistral.ai](https://console.mistral.ai) | free Experiment tier, a monthly token allowance | optional |
+| `OPENROUTER_API_KEY` | [openrouter.ai/keys](https://openrouter.ai/keys) | free models: 20 req/min but only **50 req/day** until you have ever bought $10 of credit | optional |
+
+The two optional reader keys are backup tiers for scanned resumes. Leave them out and the chain simply builds without them — nothing fails, it just drops to PaddleOCR one rung earlier.
+
+<details>
+<summary><b>Those Gemini per-minute numbers are measured, not quoted</b></summary>
+
+Published free-tier tables disagree with each other and none of them matched this project. Fire concurrent requests at your own key until it refuses and Google names the quota exactly:
+
+```
+"quotaId":    "GenerateRequestsPerMinutePerProjectPerModel-FreeTier"
+"quotaValue": "5"          # gemini-3.5-flash and gemini-flash-latest
+"quotaValue": "15"         # gemini-flash-lite-latest
+"retryDelay": "58s"
+```
+
+**The cap that bites is per minute, not per day.** A dozen quick test calls will exhaust Flash and it recovers a minute later — that is not a daily budget running out, and it is worth knowing before you go looking for a bug that is not there.
+
+Separately, `gemini-3.5-flash` currently returns `503 "this model is currently experiencing high demand"` on a fair share of calls regardless of quota. That is why there is anything behind it at all.
+
+</details>
+
+<details>
+<summary><b>⚠️ Cerebras is a credit trial, not a free tier</b></summary>
+
+Cerebras leads the judging chain because its Free Trial allows **1,000,000 tokens a day** against Groq's 200,000 per model. That number is real, but it is funded by **$5 of free credit that expires 30 days after it is granted** ([pricing](https://www.cerebras.ai/pricing), [rate limits](https://inference-docs.cerebras.ai/support/rate-limits)). When the credit is gone, every call returns:
+
+```
+402 payment_required - "Payment required to access this resource. Visit your billing tab."
+```
+
+The key still authenticates and `GET /v1/models` still works, so nothing looks broken. And because `ChatCerebras` raises that as an `openai.APIStatusError`, which is in the fallback list on purpose, `with_fallbacks` skips it **in complete silence** — a dead key is indistinguishable from a healthy one that simply was not needed.
+
+That is what `provider_summary()` is for. It prints who graded how many groups after every batch, and says so out loud when the model at the top of the chain answered nothing.
+
+Two other things worth knowing before you lean on it: Cerebras Free Trial allows only **5 requests a minute** against Groq's 30, and caps context at **8,192 tokens**, which a long resume will overflow.
+
+The project runs perfectly well with no Cerebras key at all. It just starts one rung lower.
+
+</details>
 
 <details>
 <summary><b>⚠️ The email password is not your Google password</b></summary>
@@ -344,13 +387,27 @@ It grades every resume, writes the ranking, emails the top candidates, then **st
 
 Every model call sits behind an ordered chain. First one that answers wins. `with_fallbacks` is **stateless**, so it restarts at the top on every call — a model that was exhausted a minute ago is used again the moment it recovers.
 
-| Stage | 1st | 2nd | 3rd | 4th | Last resort |
-|:--|:--|:--|:--|:--|:--|
-| **Extraction** | Gemini Flash | Flash Lite | Groq Llama-4-Scout | — | PaddleOCR *(local)* |
-| **Markdown → JSON** | Cerebras | Groq Llama-3.3-70B | Groq GPT-OSS-120B | Gemini Flash | — |
-| **Judging** | Cerebras | Groq GPT-OSS-120B | Groq Llama-3.3-70B | Gemini Flash | Ollama *(local)* |
+| Stage | 1st | 2nd | 3rd | 4th | 5th | 6th | Last resort |
+|:--|:--|:--|:--|:--|:--|:--|:--|
+| **Extraction** | Gemini Flash | Flash Lite | Mistral Small *(opt)* | OpenRouter Nemotron VL *(opt)* | — | — | PaddleOCR *(local)* |
+| **Markdown → JSON** | Cerebras | Groq GPT-OSS-120B | Groq Qwen3.6-27B | Gemini Flash | — | — | — |
+| **Judging** | Cerebras | Groq GPT-OSS-120B | Groq Qwen3.6-27B | Groq GPT-OSS-20B | Gemini Flash | Flash Lite | Ollama *(local)* |
+
+Groq counts its free limits **per model**, so each extra Groq name in a chain is another 200,000 tokens and another 1,000 requests for the day on the same key. Three of them is 600,000 tokens and 3,000 requests, which is what a 20-resume batch actually needs. The same is true of Gemini, which is why Flash Lite sits below Flash rather than beside it.
 
 Anything graded by the local model is flagged **`GRADED BY LOCAL MODEL - MANUAL CHECKING REQUIRED`** in the gradesheet and in the ranking. A small local model is a safety net, not a judge you trust silently.
+
+<details>
+<summary><b>Models this project has already outlived</b></summary>
+
+| Model | What happened | Replaced by |
+|:--|:--|:--|
+| `llama-3.3-70b-versatile` | Groq shut it down on 16 Aug 2026 | `qwen/qwen3.6-27b` |
+| `meta-llama/llama-4-scout-17b-16e-instruct` | gone from Groq, returns `404 model_not_found`. Groq now serves no image model at all | that tier was removed; PaddleOCR catches the scans |
+
+A model name is not a constant. Check `GET /openai/v1/models` on your own key before blaming the code.
+
+</details>
 
 <details>
 <summary><b>A subtle bug worth knowing about</b></summary>

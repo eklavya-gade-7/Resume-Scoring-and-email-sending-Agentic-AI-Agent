@@ -4,8 +4,9 @@ from create_chunk_embeddings import create_embeddings
 from decompose_JD import query_decomposition
 from retrieval_databases import create_sparse_db
 from build_evidence import build_evidence
-from generate_score import generate_score
+from generate_score import generate_score, provider_summary
 from write_verdict import write_verdict, write_ranking
+from bias_check import run_bias_check
 from agent import start_candidate_workflows
 from google_calender import proposed_slots
 import os
@@ -13,6 +14,7 @@ import sys
 import json
 import hashlib
 import subprocess
+import traceback
 
 
 cwd = os.getcwd()
@@ -137,12 +139,28 @@ def screen_resume(path, groups, report_path="output_file.txt",
             "file": os.path.basename(path),
             "name": None,
             "score": None,
+            "profile": None,
             "status": "extraction failed - manual review"
         }
 
     candidate_name = resume_data.get("name") or "unknown"
 
     chunks = create_structural_chunks_from_resume(resume_data)
+
+    # A profile with nothing in it produces no chunks, and an empty index is a
+    # confusing error two layers down in retrieval rather than here. It also
+    # must not be scored: no chunks means every criterion comes back NOT_MET
+    # and the resume lands at the bottom of the ranking looking like a genuinely
+    # weak candidate, when really nothing was ever read.
+    if len(chunks) == 0:
+        print(f"  nothing readable in {os.path.basename(path)}")
+        return {
+            "file": os.path.basename(path),
+            "name": candidate_name,
+            "score": None,
+            "profile": None,
+            "status": "the extractor returned an empty profile - manual review"
+        }
 
     dense_vector_db = create_embeddings(chunks)
     sparse_db, tfidf = create_sparse_db(chunks)
@@ -183,6 +201,9 @@ def screen_resume(path, groups, report_path="output_file.txt",
         "file": os.path.basename(path),
         "name": candidate_name,
         "score": final_score,
+        # carried through so the bias check can group candidates by institution
+        # and department without re-reading the extraction cache
+        "profile": resume_data,
         "status": status,
         "chunks": len(chunks),
         "unreadable": unreadable_requirements,
@@ -194,24 +215,111 @@ verdicts_directory = os.path.join(cwd,"test_resumes_verdicts")
 # Interview invitations go to these addresses, in ranked order - the top
 # candidate gets the first, and the shortlist is however long this list is.
 # Put your own addresses here before running.
-emails_list = ["you@example.com", "second@example.com", "third@example.com"]
+emails_list = ["eklavyad89@gmail.com", "vrushaligade@gmail.com", "vrushaligade1@gmail.com"]
+
+# How far down the ranking the bias check looks. This is deliberately wider
+# than the invitation list: with a big pile of resumes, three selections is far
+# too small a sample for a selection ratio to mean anything, since one
+# candidate either way swings a group by 33 points. Ten gives the group counts
+# enough room to show a real pattern. Nobody outside emails_list is contacted.
+BIAS_BAND_SIZE = 10
+
+# What counts as a resume. Everything else in the folder is left alone - the
+# reader has no handler for a .gitkeep or a stray .DS_Store and dies on the
+# first one it meets, taking the whole batch with it.
+RESUME_EXTENSIONS = (".pdf", ".png", ".jpg", ".jpeg")
+
+
+def list_resumes(directory):
+    """The resume files in a folder, in a fixed order.
+
+    Sorted because os.listdir returns whatever order the filesystem hands
+    back. Two candidates on the same score are separated by the order they
+    were screened in, so an unsorted listing means the same batch can rank
+    them differently on different machines.
+    """
+    everything = sorted(os.listdir(directory))
+
+    resumes = [
+        name for name in everything
+        if name.lower().endswith(RESUME_EXTENSIONS)
+    ]
+
+    skipped = [name for name in everything if name not in resumes]
+
+    if len(skipped) > 0:
+        print(f"ignoring {len(skipped)} non-resume file(s): {', '.join(skipped)}")
+
+    return resumes
+
+
+# Where the traceback of anything that crashed mid-batch goes. Written fresh
+# each run, so what is in it always belongs to the run that just happened.
+failures_path = os.path.join(cwd, "screening_failures.txt")
 
 
 def full_run():
 
     os.makedirs(verdicts_directory, exist_ok=True)
 
+    if os.path.exists(failures_path):
+        os.remove(failures_path)
+
+    filenames = list_resumes(test_resumes_directory)
+
+    if len(filenames) == 0:
+        raise SystemExit(
+            f"no resumes found in {test_resumes_directory}. Put PDF, PNG or "
+            f"JPG files there and run again."
+        )
+
+    print(f"screening {len(filenames)} resume(s)")
+
     results = []
 
-    for filename in os.listdir(test_resumes_directory):
+    for filename in filenames:
 
-        result = screen_resume(
-            os.path.join(test_resumes_directory, filename),
-            groups,
-            report_path=os.path.join(verdicts_directory, filename + "_evidence.txt"),
-            gradesheet_path=os.path.join(verdicts_directory, filename + "_gradesheet.txt"),
-            verdict_path=os.path.join(verdicts_directory, filename + "_verdict.txt")
-        )
+        try:
+            result = screen_resume(
+                os.path.join(test_resumes_directory, filename),
+                groups,
+                report_path=os.path.join(verdicts_directory, filename + "_evidence.txt"),
+                gradesheet_path=os.path.join(verdicts_directory, filename + "_gradesheet.txt"),
+                verdict_path=os.path.join(verdicts_directory, filename + "_verdict.txt")
+            )
+
+        # One bad resume must not take the rest of the batch with it. On a pile
+        # of twenty, an unguarded exception on number three throws away the two
+        # already screened and never reaches the other seventeen - which is a
+        # far worse outcome than one file going to a human.
+        #
+        # screen_resume already handles the readers all giving up. This catches
+        # everything else, and there is a real list of those: a file that is
+        # named .pdf but is not one raises FileDataError, an extractor that
+        # returns "education": null crashes chunking with a TypeError, one that
+        # returns a list of strings where dicts belong raises AttributeError,
+        # and a resume with too few real words to index raises "empty
+        # vocabulary" out of the sparse database. Catching them one by one only
+        # covers the ones already met, so this catches the shape of the problem
+        # instead: whatever went wrong, that resume is unscored and flagged.
+        except Exception as error:
+
+            print(f"  {filename} crashed: {type(error).__name__}: {error}")
+
+            with open(failures_path, "a", encoding="utf8") as f:
+                f.write(f"\n{'=' * 70}\n{filename}\n{'=' * 70}\n")
+                f.write(traceback.format_exc())
+
+            result = {
+                "file": filename,
+                "name": None,
+                "score": None,
+                "profile": None,
+                "status": (
+                    f"crashed during screening ({type(error).__name__}) - "
+                    f"manual review, full traceback in {os.path.basename(failures_path)}"
+                )
+            }
 
         if result["score"] is None:
             print(f"  not ranked: {result['file']} - {result['status']}")
@@ -226,6 +334,18 @@ def full_run():
     )
 
     print(f"\nranking written to pipeline_ranking.txt ({len(ranked)} scored)")
+
+    provider_summary()
+
+    # Runs on the finished ranking and changes nothing about it. It only writes
+    # a report, so a flag here never silently reorders anyone or alters who is
+    # emailed.
+    run_bias_check(
+        ranked,
+        band_size=BIAS_BAND_SIZE,
+        output_path=os.path.join(cwd, "bias_report.txt"),
+        invited_size=len(emails_list)
+    )
 
     top_candidates = []
 

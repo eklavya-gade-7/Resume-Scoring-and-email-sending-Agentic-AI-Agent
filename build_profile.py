@@ -45,16 +45,19 @@ def build_model_chain():
         except ImportError:
             print("CEREBRAS_API_KEY set but langchain-cerebras is not installed")
 
-    # known good with this exact nested schema
-    models.append(init_chat_model(
-        "groq:llama-3.3-70b-versatile",
-        api_key=GROQ_API_KEY,
-        temperature=0
-    ))
-
-    # different Groq model, so a separate daily token budget
+    # This slot used to be llama-3.3-70b-versatile, which was known good with
+    # this exact nested schema. Groq retired it on 16 August 2026, so the two
+    # models it named as replacements take its place. Each is a separate 200K
+    # tokens and 1000 requests for the day on the same key.
     models.append(init_chat_model(
         "openai/gpt-oss-120b",
+        api_key=GROQ_API_KEY,
+        temperature=0,
+        model_provider="groq"
+    ))
+
+    models.append(init_chat_model(
+        "qwen/qwen3.6-27b",
         api_key=GROQ_API_KEY,
         temperature=0,
         model_provider="groq"

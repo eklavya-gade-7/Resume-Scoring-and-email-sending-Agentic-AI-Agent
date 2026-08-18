@@ -24,9 +24,12 @@ profile_cache/
 # deck screenshots their scores - kept local, not published
 expected_grading.txt
 *.pptx
+*.odp
+.~lock.*#
 
 # generated on every run
 pipeline_ranking.txt
+bias_report.txt
 test_resumes_verdicts/
 gradesheet.txt
 verdict.txt

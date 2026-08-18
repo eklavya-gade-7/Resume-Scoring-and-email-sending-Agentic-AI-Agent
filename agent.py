@@ -255,4 +255,18 @@ def start_candidate_workflows(top_candidates, proposed_slots):
             }
         }
 
-        app.invoke(initial_state, config=config)
+        # Same reasoning as the screening loop in main.py. A refused SMTP login
+        # or a stale calendar token on the first candidate would otherwise mean
+        # the second and third are never written to at all, and the run looks
+        # like it finished. By this point every score and report is already on
+        # disk, so one failed invitation is worth reporting and carrying on
+        # from rather than losing the other candidates over.
+        try:
+            app.invoke(initial_state, config=config)
+
+        except Exception as error:
+            print(
+                f"  could not start the workflow for "
+                f"{candidate_data.get('name')} <{candidate_data.get('email')}>: "
+                f"{type(error).__name__}: {error}"
+            )

@@ -13,7 +13,19 @@ def create_sparse_db(chunks):
 
     tfidf = TfidfVectorizer(token_pattern=TOKEN_PATTERN, lowercase=True)
 
-    sparse_db = tfidf.fit_transform(chunk_texts)
+    try:
+        sparse_db = tfidf.fit_transform(chunk_texts)
+
+    except ValueError as error:
+        # sklearn reports this as "empty vocabulary; perhaps the documents only
+        # contain stop words", which sends you looking in the wrong place -
+        # there are no stop words configured here. What it actually means is
+        # that TOKEN_PATTERN matched nothing at all, so the resume text is
+        # empty or has no words in it. Say that instead.
+        raise ValueError(
+            f"nothing indexable in {len(chunk_texts)} chunk(s) - the resume "
+            f"text is empty or unreadable ({error})"
+        ) from error
 
     return sparse_db, tfidf
 

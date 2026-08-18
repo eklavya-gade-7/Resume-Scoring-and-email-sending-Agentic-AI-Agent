@@ -6,6 +6,25 @@ def calculate_duration_months(start, end):
     if start is None:
         return None, None
 
+    # A year sometimes arrives as the number 2022 rather than the string
+    # "2022", and len() of an int is a TypeError. Everything below this line
+    # measures the length of the text, so make it text first.
+    start = str(start)
+
+    if end is not None:
+        end = str(end)
+
+    # "2022-13" is seven characters and passes the length test, but strptime
+    # rejects month 13. An unparseable date is not worth failing a resume over
+    # - the duration is simply unknown, which is what None already means here.
+    try:
+        return months_between(start, end)
+    except ValueError:
+        return None, None
+
+
+def months_between(start, end):
+
     if len(start) == 7:
         start_earliest = datetime.strptime(start, "%Y-%m")
         start_latest = start_earliest
@@ -59,11 +78,22 @@ def clean_text(text):
 
 
 def remove_duplicates(values):
+
     answer = []
 
-    for value in values:
+    # `values or []` rather than plain `values`. A field the extractor filled
+    # with an explicit null reaches here as None, and dict.get("x", []) does NOT
+    # return the default for a key that exists with a null value - it returns
+    # the null. Iterating that is a TypeError that kills the whole batch.
+    for value in values or []:
+
         if value is None:
             continue
+
+        # Extractors sometimes put a number where a string belongs, most often a
+        # bare year. str() keeps the value instead of dropping it.
+        if not isinstance(value, str):
+            value = str(value)
 
         value = clean_text(value)
 
@@ -73,11 +103,42 @@ def remove_duplicates(values):
     return answer
 
 
+def entries(value):
+    """The dict entries of a resume list field, whatever the extractor produced.
+
+    education, experience, projects and the rest are meant to be lists of
+    dicts, and usually are. But the model writing them is not bound to that:
+    it can return null for a section the resume does not have, a single dict
+    where the resume had exactly one entry, or a list of plain strings like
+    ["IIT Madras"] when it decides to flatten the shape.
+
+    Every one of those crashed the chunker rather than the one resume - a null
+    on len(), a string on .get(). Normalising here keeps a slightly odd
+    extraction scoreable instead of sending it to a human.
+    """
+    if value is None:
+        return []
+
+    if isinstance(value, dict):
+        return [value]
+
+    if not isinstance(value, list):
+        return []
+
+    return [item for item in value if isinstance(item, dict)]
+
+
 def create_structural_chunks_from_resume(resume):
 
     chunks = []
 
-    technical_skills = resume.get("technical_skills", {}) or {}
+    technical_skills = resume.get("technical_skills")
+
+    # `or {}` alone is not enough. It catches null and {}, but a model that
+    # returns a plain string here - "technical_skills": "Python, C++" - is
+    # truthy, sails past it, and dies on .get() a line later.
+    if not isinstance(technical_skills, dict):
+        technical_skills = {}
 
     programming_languages = remove_duplicates(
         technical_skills.get("programming_languages", [])
@@ -211,7 +272,7 @@ def create_structural_chunks_from_resume(resume):
         })
 
 
-    experiences = resume.get("experience", [])
+    experiences = entries(resume.get("experience"))
 
     for i in range(len(experiences)):
 
@@ -291,7 +352,7 @@ def create_structural_chunks_from_resume(resume):
         })
 
 
-    education = resume.get("education", [])
+    education = entries(resume.get("education"))
 
     for i in range(len(education)):
 
@@ -344,7 +405,7 @@ def create_structural_chunks_from_resume(resume):
         })
 
 
-    projects = resume.get("projects", [])
+    projects = entries(resume.get("projects"))
 
     for i in range(len(projects)):
 
@@ -413,10 +474,7 @@ def create_structural_chunks_from_resume(resume):
         })
 
 
-    positions = resume.get(
-        "positions_of_responsibility",
-        []
-    )
+    positions = entries(resume.get("positions_of_responsibility"))
 
     simple_positions = []
 

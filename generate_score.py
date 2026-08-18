@@ -16,6 +16,13 @@ from openai import (
     APIConnectionError as OpenAIAPIConnectionError,
 )
 from google.genai.errors import APIError as GoogleAPIError
+# Same trap as the Cerebras/Groq one below. ChatGoogleGenerativeAI does NOT
+# raise google.genai.errors.APIError - it catches that and re-raises its own
+# ChatGoogleGenerativeAIError, which descends from Exception and nothing else.
+# The two are unrelated classes, so catching only the SDK one let a Gemini 429
+# walk straight past the fallback and kill the group instead of falling
+# through to Ollama. It is not exported at package level, hence the deep import.
+from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
 from langchain_core.exceptions import ContextOverflowError
 from httpx import ConnectError as OllamaConnectionError
 from ollama import ResponseError
@@ -28,27 +35,75 @@ load_dotenv()
 # again the moment it recovers, and nothing has to be reset.
 LOCAL_MODEL = "qwen3:0.6b"
 
+GROQ_KEY = os.getenv("GROQ_API_KEY")
+
+# Groq's free limits are counted per model, so every extra model named here is
+# another 200,000 tokens and another 1,000 requests for the day on the same
+# key. Three of them is 600,000 tokens and 3,000 requests, which is what a
+# 20-resume batch actually needs. Read live off the response headers:
+# x-ratelimit-limit-requests = 1000, x-ratelimit-limit-tokens = 8000 per minute.
+#
+# The per-minute token limit is the tight one. At 8,000 tokens a minute and a
+# judging prompt of roughly 2,000, one model answers about four groups a minute
+# and then starts returning 429. That is a wait of well under a minute, not a
+# reason to give up on the model, so the Groq client is told to retry instead of
+# falling straight through. It honours the retry-after header the API sends
+# back, and costs nothing when nothing is rate limited.
+GROQ_RETRIES = 4
+
 # init_chat_model has no "cerebras" provider, so this one is constructed
 # directly. ChatCerebras subclasses BaseChatOpenAI, which is why the openai
 # exception types appear in the fallback list below.
-primary = ChatCerebras(                          # 1M tokens/day
+#
+# 1M tokens/day, the widest budget in the chain, but it is a $5 credit trial
+# rather than a standing free tier. When the credits run out every call comes
+# back 402 payment_required, which is an openai.APIStatusError, which is caught
+# below and skipped in silence. provider_summary at the end of a batch is what
+# makes that visible.
+primary = ChatCerebras(
     model="gpt-oss-120b",
     api_key=os.getenv("CEREBRAS_API_KEY"),
     temperature=0
 )
 
-second = init_chat_model(                        # 200K/day, separate provider
+second = init_chat_model(                        # 200K tokens/day, 1000 requests
     "openai/gpt-oss-120b", model_provider="groq",
-    api_key=os.getenv("GROQ_API_KEY"), temperature=0, reasoning_effort="low"
+    api_key=GROQ_KEY, temperature=0, reasoning_effort="low",
+    max_retries=GROQ_RETRIES
 )
 
-third = init_chat_model(                         # 100K/day, separate Groq budget
-    "llama-3.3-70b-versatile", model_provider="groq",
-    api_key=os.getenv("GROQ_API_KEY"), temperature=0
+# Groq retired llama-3.3-70b-versatile on 16 August 2026 and named this as its
+# replacement. Same key, its own separate 200K tokens and 1000 requests.
+#
+# reasoning_effort is not a nice-to-have here. This is a reasoning model, and
+# left alone it writes out its whole thought process before answering: measured
+# on a real judging prompt, 1115 output tokens against 58 for gpt-oss-120b. Out
+# of a 200K daily budget that is the difference between 76 groups and 130. The
+# grading is a labelling job with the rules already spelled out in the prompt,
+# so the thinking buys nothing. "none" and "default" are the only two values
+# this model accepts - "low" is a 400.
+third = init_chat_model(                         # 200K tokens/day, 1000 requests
+    "qwen/qwen3.6-27b", model_provider="groq",
+    api_key=GROQ_KEY, temperature=0, reasoning_effort="none",
+    max_retries=GROQ_RETRIES
 )
 
-fourth = ChatGoogleGenerativeAI(                 # different company entirely
+fourth = init_chat_model(                        # 200K tokens/day, 1000 requests
+    "openai/gpt-oss-20b", model_provider="groq",
+    api_key=GROQ_KEY, temperature=0, reasoning_effort="low",
+    max_retries=GROQ_RETRIES
+)
+
+fifth = ChatGoogleGenerativeAI(                  # different company entirely
     model="gemini-flash-latest",
+    google_api_key=os.getenv("GEMINI_API_KEY"), temperature=0
+)
+
+# Gemini counts its free quota per model too, so the lite one is a second
+# Google budget rather than the same one again. It is a weaker model, which is
+# why it sits below flash instead of beside it.
+sixth = ChatGoogleGenerativeAI(
+    model="gemini-flash-lite-latest",
     google_api_key=os.getenv("GEMINI_API_KEY"), temperature=0
 )
 
@@ -68,14 +123,15 @@ FALLBACK_ERRORS = (
     RateLimitError,            # groq, out of tokens or requests
     APIStatusError,            # groq, 5xx
     APIConnectionError,        # groq, network
-    GoogleAPIError,            # gemini, quota / 4xx / 5xx
+    GoogleAPIError,            # gemini, raw SDK path
+    ChatGoogleGenerativeAIError,  # gemini, what the LangChain wrapper actually raises
     ContextOverflowError,      # prompt longer than this model's context window
     ResponseError,             # ollama, model missing or crashed
     OllamaConnectionError,     # ollama, daemon not running
 )
 
 llm = primary.with_fallbacks(
-    [second, third, fourth, local],
+    [second, third, fourth, fifth, sixth, local],
     exceptions_to_handle=FALLBACK_ERRORS
 )
 
@@ -259,6 +315,43 @@ def render_criteria(criteria):
     return "\n".join(lines)
 
 
+def response_text(response):
+    """The reply as one string, whatever shape the provider returned.
+
+    Cerebras and Groq set .content to a plain string. Gemini sets it to a list
+    of content blocks - [{"type": "text", "text": "..."}, ...] - and running a
+    regex over a list raises "expected string or bytes-like object, got 'list'".
+
+    This only ever bites when the chain falls through to Gemini, which is why
+    it stayed hidden until a batch large enough to exhaust Cerebras and both
+    Groq budgets. Worse, it is a parse failure AFTER a successful call, so the
+    fallback chain cannot rescue it: the model answered perfectly well and our
+    own reader choked on the envelope.
+
+    Blocks with no "text" key, such as Gemini's reasoning blocks, are dropped.
+    """
+    content = response.content
+
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+
+        parts = []
+
+        for block in content:
+
+            if isinstance(block, str):
+                parts.append(block)
+
+            elif isinstance(block, dict) and isinstance(block.get("text"), str):
+                parts.append(block["text"])
+
+        return "\n".join(parts)
+
+    return str(content)
+
+
 def parse_verdicts(response, criteria_count):
     """Read the reply into {criterion number: verdict}.
 
@@ -308,6 +401,86 @@ def match_verdict(text):
     return None
 
 
+# Which model answered how many groups, across the whole batch. with_fallbacks
+# is silent by design: a provider that raises is skipped with no message, so a
+# key that is dead on every single call looks exactly like a key that is
+# working. That is not a hypothetical - a Cerebras 402 hid behind this for a
+# whole 22-resume batch while every call quietly ran on Groq's much smaller
+# budget. Counting who actually answered is the cheapest way to see it.
+PROVIDER_TALLY = {}
+
+# Every cloud model in the chain, in order, with the name it reports back in
+# its response metadata and who it belongs to. Only provider_summary uses this,
+# to name the ones that contributed nothing.
+CHAIN_MODELS = [
+    ("gpt-oss-120b", "Cerebras"),
+    ("openai/gpt-oss-120b", "Groq"),
+    ("qwen/qwen3.6-27b", "Groq"),
+    ("openai/gpt-oss-20b", "Groq"),
+    ("gemini-flash-latest", "Google"),
+    ("gemini-flash-lite-latest", "Google")
+]
+
+# The one worth calling out by name. It leads the chain and has by far the
+# largest daily budget, so if it answered nothing then every call landed on a
+# much smaller quota and the batch will run out far earlier than it should.
+PRIMARY_MODEL = "gpt-oss-120b"
+
+
+def answered(model_name):
+    """How many groups a chain model graded.
+
+    Matched loosely because providers do not always echo the name back exactly
+    as it was asked for - a moving alias like gemini-flash-latest is reported
+    as whichever build it resolved to that day.
+    """
+    count = 0
+
+    for name, groups in PROVIDER_TALLY.items():
+        if name == model_name or name.startswith(model_name):
+            count += groups
+
+    return count
+
+
+def provider_summary():
+    """One block naming who did the work. Costs nothing, prints after a batch."""
+    if len(PROVIDER_TALLY) == 0:
+        return
+
+    total = sum(PROVIDER_TALLY.values())
+
+    print("\n  groups graded, by model")
+    print("  " + "-" * 52)
+
+    for name, count in sorted(PROVIDER_TALLY.items(), key=lambda kv: -kv[1]):
+        print(f"    {count:>5}  {count * 100 / total:>5.1f}%   {name}")
+
+    # with_fallbacks skips a failing model in silence, so a key that is dead on
+    # every single call looks exactly like a key nothing needed to use. Naming
+    # the models that answered nothing is the only way to tell the two apart.
+    silent = [
+        f"{name} ({owner})"
+        for name, owner in CHAIN_MODELS
+        if answered(name) == 0
+    ]
+
+    if len(silent) > 0:
+        print("\n  answered nothing this batch: " + ", ".join(silent))
+        print("  That is fine if the batch was small. If it was not, the model")
+        print("  is failing on every call and being skipped without a message.")
+
+    if answered(PRIMARY_MODEL) == 0:
+        print(
+            f"\n  WARNING: {PRIMARY_MODEL} on Cerebras answered nothing. It\n"
+            f"  leads the chain and carries the largest daily budget, so every\n"
+            f"  call landed on a much smaller quota instead. Cerebras free\n"
+            f"  access is $5 of credit that expires 30 days after it is\n"
+            f"  granted, and once it is spent every call returns 402. Check\n"
+            f"  the billing tab at cloud.cerebras.ai."
+        )
+
+
 def model_name_of(response):
     """Which model actually answered. Providers use different metadata keys."""
     meta = getattr(response, "response_metadata", {}) or {}
@@ -347,7 +520,7 @@ def judge_group(group):
         })
 
         model_used = model_name_of(response)
-        answered = parse_verdicts(response.content, len(criteria))
+        answered = parse_verdicts(response_text(response), len(criteria))
 
     except Exception as error:
         print(f"  grading failed for group '{group['name']}': {error}")
@@ -392,6 +565,8 @@ def generate_score(evidence, output_path="gradesheet.txt"):
 
             verdicts, calls_made, model_used = judge_group(group)
             api_calls += calls_made
+
+            PROVIDER_TALLY[model_used] = PROVIDER_TALLY.get(model_used, 0) + 1
 
             # LOCAL_MODEL only runs when every cloud model is exhausted. It
             # scored 2/7 on the known-answer set, so its grades are marked
